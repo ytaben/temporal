@@ -29,7 +29,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 
@@ -40,8 +42,9 @@ import (
 
 func TestNewCassandraCluster(t *testing.T) {
 	tests := map[string]struct {
-		cfg config.Cassandra
-		err error
+		cfg    config.Cassandra
+		err    error
+		verify func(t *testing.T, cluster *gocql.ClusterConfig)
 	}{
 		"emptyConfig": {
 			cfg: config.Cassandra{},
@@ -128,15 +131,56 @@ func TestNewCassandraCluster(t *testing.T) {
 			},
 			err: errors.New("only one of caData or caFile properties should be specified"),
 		},
+		"reconnection_policy_default": {
+			cfg: config.Cassandra{},
+			verify: func(t *testing.T, cluster *gocql.ClusterConfig) {
+				rp, ok := cluster.ReconnectionPolicy.(*gocql.ExponentialReconnectionPolicy)
+				assert.True(t, ok, "reconnection policy must be ExponentialReconnectionPolicy")
+				assert.Equal(t, 30, rp.MaxRetries)
+				assert.Equal(t, time.Second, rp.InitialInterval)
+				assert.Equal(t, 10*time.Second, rp.MaxInterval)
+			},
+		},
+		"reconnection_policy_max_retries": {
+			cfg: config.Cassandra{
+				ReconnectionPolicy: &config.CassandraReconnectionPolicy{
+					MaxRetries: 3,
+				},
+			},
+			verify: func(t *testing.T, cluster *gocql.ClusterConfig) {
+				rp := cluster.ReconnectionPolicy.(*gocql.ExponentialReconnectionPolicy)
+				assert.Equal(t, 3, rp.MaxRetries)
+				assert.Equal(t, time.Second, rp.InitialInterval)
+				assert.Equal(t, 10*time.Second, rp.MaxInterval)
+			},
+		},
+		"reconnection_policy_all_fields": {
+			cfg: config.Cassandra{
+				ReconnectionPolicy: &config.CassandraReconnectionPolicy{
+					MaxRetries:      5,
+					InitialInterval: 250 * time.Millisecond,
+					MaxInterval:     2 * time.Second,
+				},
+			},
+			verify: func(t *testing.T, cluster *gocql.ClusterConfig) {
+				rp := cluster.ReconnectionPolicy.(*gocql.ExponentialReconnectionPolicy)
+				assert.Equal(t, 5, rp.MaxRetries)
+				assert.Equal(t, 250*time.Millisecond, rp.InitialInterval)
+				assert.Equal(t, 2*time.Second, rp.MaxInterval)
+			},
+		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			r := resolver.NewMockServiceResolver(ctrl)
-			_, err := NewCassandraCluster(tc.cfg, r)
+			cluster, err := NewCassandraCluster(tc.cfg, r)
 			if !errors.Is(err, tc.err) {
 				assert.Equal(t, tc.err, err)
+			}
+			if tc.verify != nil {
+				tc.verify(t, cluster)
 			}
 			ctrl.Finish()
 		})
