@@ -197,6 +197,40 @@ func (s *rescheudulerSuite) TestReschedule_DropCancelled() {
 	s.Equal(0, s.rescheduler.Len())
 }
 
+func (s *rescheudulerSuite) TestCleanupPQ_PurgeCancelledBehindBlockedHead() {
+	now := time.Now()
+	s.timeSource.Update(now)
+
+	blockedTask := NewMockExecutable(s.controller)
+	blockedTask.EXPECT().State().Return(ctasks.TaskStatePending).AnyTimes()
+	blockedTask.EXPECT().SetScheduledTime(gomock.Any()).AnyTimes()
+	s.rescheduler.Add(blockedTask, now)
+
+	numCancelled := 10
+	for i := 0; i != numCancelled; i++ {
+		mockTask := NewMockExecutable(s.controller)
+		mockTask.EXPECT().State().Return(ctasks.TaskStateCancelled).AnyTimes()
+		s.rescheduler.Add(mockTask, now.Add(time.Duration(i+1)*time.Millisecond))
+	}
+
+	// head can't be submitted, so cancelled executables behind it are retained
+	s.mockScheduler.EXPECT().TrySubmit(blockedTask).Return(false).Times(1)
+	s.timeSource.Update(now.Add(time.Second))
+	s.rescheduler.reschedule()
+	s.Equal(numCancelled+1, s.rescheduler.Len())
+
+	s.rescheduler.cleanupPQ()
+	s.Equal(1, s.rescheduler.Len())
+	s.Len(s.rescheduler.pqMap, 1)
+
+	s.mockScheduler.EXPECT().TrySubmit(blockedTask).Return(true).Times(1)
+	s.rescheduler.reschedule()
+	s.Equal(0, s.rescheduler.Len())
+
+	s.rescheduler.cleanupPQ()
+	s.Empty(s.rescheduler.pqMap)
+}
+
 func (s *rescheudulerSuite) TestForceReschedule_ImmediateTask() {
 	now := time.Now()
 	s.timeSource.Update(now)
