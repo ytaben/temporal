@@ -23,7 +23,7 @@ const (
 	taskChanFullBackoff                  = 2 * time.Second
 	taskChanFullBackoffJitterCoefficient = 0.5
 
-	reschedulerPQCleanupDuration          = 3 * time.Minute
+	reschedulerPQCleanupDuration          = 1 * time.Minute
 	reschedulerPQCleanupJitterCoefficient = 0.15
 )
 
@@ -245,9 +245,25 @@ func (r *reschedulerImpl) cleanupPQ() {
 	defer r.Unlock()
 
 	for key, pq := range r.pqMap {
-		if pq.IsEmpty() {
-			delete(r.pqMap, key)
+		// reschedule() only drops cancelled executables when they reach the head of the pq,
+		// and stops at the first head that fails to submit (e.g. rate limited). Cancelled
+		// executables (e.g. from queue slice Clear()) behind a blocked head would otherwise
+		// be retained until the head drains, so purge them here.
+		items := make([]rescheduledExecuable, 0, pq.Len())
+		for !pq.IsEmpty() {
+			rescheduled := pq.Remove()
+			if rescheduled.executable.State() == ctasks.TaskStateCancelled {
+				r.numExecutables--
+				continue
+			}
+			items = append(items, rescheduled)
 		}
+
+		if len(items) == 0 {
+			delete(r.pqMap, key)
+			continue
+		}
+		r.pqMap[key] = r.newPriorityQueue(items)
 	}
 }
 
