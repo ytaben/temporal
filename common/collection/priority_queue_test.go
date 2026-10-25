@@ -93,6 +93,38 @@ func (s *PriorityQueueSuite) TestInsertAndPop() {
 	s.Equal(expected, result)
 }
 
+func (s *PriorityQueueSuite) TestRemoveClearsPointerFromBackingArrayAndReusesStorage() {
+	items := make([]*testPriorityQueueItem, 4, 8)
+	for i, value := range []int{1, 2, 3, 4} {
+		items[i] = &testPriorityQueueItem{value: value}
+	}
+	s.pq = NewPriorityQueueWithItems(testPriorityQueueItemCompareLess, items)
+	pq := s.pq.(*priorityQueueImpl[*testPriorityQueueItem])
+
+	removedItems := make([]*testPriorityQueueItem, 0, 2)
+	for _, expected := range []int{1, 2} {
+		removed := s.pq.Remove()
+		s.Equal(expected, removed.value)
+		removedItems = append(removedItems, removed)
+	}
+
+	backingItems := pq.items[:cap(pq.items)]
+	for _, removed := range removedItems {
+		for _, item := range backingItems {
+			s.NotEqual(removed, item, "removed item remains in backing array")
+		}
+	}
+
+	s.pq.Add(&testPriorityQueueItem{value: 0})
+	s.pq.Add(&testPriorityQueueItem{value: 5})
+
+	result := make([]int, 0, s.pq.Len())
+	for !s.pq.IsEmpty() {
+		result = append(result, s.pq.Remove().value)
+	}
+	s.Equal([]int{0, 3, 4, 5}, result)
+}
+
 func (s *PriorityQueueSuite) TestRandomNumber() {
 	for range 1000 {
 
